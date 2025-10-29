@@ -9,21 +9,88 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Ensure the fragment exists (committed or generated)
+      - name: Ensure kernel.nvidia.fragment exists (use committed or generate)
+        run: |
+          set -euo pipefail
+          if [ -f kernel.nvidia.fragment ]; then
+            echo "Using committed kernel.nvidia.fragment"
+          else
+            echo "Committed fragment not found; generating a default one..."
+            cat > kernel.nvidia.fragment <<'FRAG'
+# --- Android IPC via binderfs ---
+CONFIG_ANDROID_BINDER_IPC=y
+CONFIG_ANDROID_BINDERFS=y
+
+# --- Loadable modules ---
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_MODVERSIONS=y
+
+# --- Filesystems used by Android-x86 images ---
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_EXT4_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_FUSE_FS=y
+
+# --- DRM core + helpers ---
+CONFIG_DRM=y
+CONFIG_DRM_KMS_HELPER=y
+CONFIG_TTM=y
+
+# --- NVIDIA (nouveau) as module (Ada requires firmware) ---
+CONFIG_DRM_NOUVEAU=m
+# If your kernel exposes it for Turing/Ampere/Ada firmware paths:
+# CONFIG_DRM_NOUVEAU_GSP_DEFAULT=y
+
+# --- Display fallbacks and EFI ---
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_FB=y
+CONFIG_FB_EFI=y
+
+# --- Input/USB/Storage/NICs common to PC/TV ---
+CONFIG_INPUT_EVDEV=y
+CONFIG_HID_GENERIC=y
+CONFIG_UHID=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_SATA_AHCI=y
+CONFIG_BLK_DEV_NVME=y
+CONFIG_E1000E=y
+CONFIG_R8169=y
+FRAG
+          fi
+          ls -l kernel.nvidia.fragment
+
       - name: Install build deps
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev \
             libelf-dev libncurses5-dev libncursesw5-dev dwarves ccache \
             curl xz-utils rsync unzip git
 
-      - name: Fetch Linux 6.7.10
+      # === Hardened download + validation for Linux sources ===
+      - name: Download & validate Linux 6.7.10 tarball
         run: |
-          curl -L https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.7.10.tar.xz -o linux-6.7.10.tar.xz
-          tar -xf linux-6.7.10.tar.xz
+          set -euo pipefail
+          SRC_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.7.10.tar.xz"
+          OUT="linux-6.7.10.tar.xz"
+          echo "Fetching: $SRC_URL"
+          curl -fL --retry 5 --retry-delay 3 -o "$OUT" "$SRC_URL"
+          echo "Verifying file exists and is non-empty..."
+          test -s "$OUT" || { echo "::error ::Download produced empty file"; exit 1; }
+          echo "File signature:"
+          file "$OUT" || true
+          echo "Testing tarball list (xz)…"
+          tar -tJf "$OUT" >/dev/null
+          echo "Extracting Linux sources…"
+          tar -xJf "$OUT"
 
       - name: Configure (merge Android + NVIDIA fragment)
         working-directory: linux-6.7.10
         run: |
+          set -euo pipefail
           make x86_64_defconfig
           ./scripts/kconfig/merge_config.sh -m .config $GITHUB_WORKSPACE/kernel.nvidia.fragment
           yes "" | make olddefconfig
@@ -32,28 +99,48 @@ jobs:
       - name: Build kernel + modules
         working-directory: linux-6.7.10
         run: |
+          set -euo pipefail
           make -j"$(nproc)"
           mkdir -p $GITHUB_WORKSPACE/out-mods
           make -j"$(nproc)" modules_install INSTALL_MOD_PATH=$GITHUB_WORKSPACE/out-mods
           ls -la arch/x86/boot/bzImage
           find $GITHUB_WORKSPACE/out-mods/lib/modules -maxdepth 1 -mindepth 1 -type d -printf "%f\n"
 
-      - name: Fetch NVIDIA/Ada firmware (linux-firmware snapshot)
+      # === Hardened download + validation for linux-firmware snapshot ===
+      - name: Download & validate linux-firmware snapshot
         run: |
-          mkdir -p fw/nvidia
-          curl -L https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/snapshot/linux-firmware-20250613.tar.gz -o lf.tar.gz
-          tar -xf lf.tar.gz
-          # Copy Ada families typically used (AD103/AD104/AD106/AD107)
+          set -euo pipefail
+          FW_URL="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/snapshot/linux-firmware-20250613.tar.gz"
+          FW="linux-firmware.tar.gz"
+          echo "Fetching: $FW_URL"
+          curl -fL --retry 5 --retry-delay 3 -o "$FW" "$FW_URL"
+          echo "Verifying file exists and is non-empty..."
+          test -s "$FW" || { echo "::error ::Firmware download produced empty file"; exit 1; }
+          echo "File signature:"
+          file "$FW" || true
+          echo "Testing tarball list (gzip)…"
+          tar -tzf "$FW" >/dev/null
+          echo "Extracting linux-firmware…"
+          tar -xzf "$FW"
+          echo "linux-firmware snapshot extracted."
+
+      - name: Stage NVIDIA Ada firmware + optional nouveau helpers
+        run: |
+          set -euo pipefail
+          mkdir -p fw/nvidia fw/nouveau
+          # Copy Ada families (AD103/AD104/AD106/AD107) if present in the snapshot
           for d in ad103 ad104 ad106 ad107; do
             if ls -d linux-firmware-*/nvidia/$d >/dev/null 2>&1; then
               rsync -a linux-firmware-*/nvidia/$d fw/nvidia/$d
             fi
           done
-          # Optional nouveau helpers (mostly for older cards)
+          # Optional helpers under nouveau/ (mostly older chips)
           rsync -a linux-firmware-*/nouveau/ fw/nouveau/ || true
+          echo "Firmware staged under fw/."
 
       - name: Package Lineage-x86-64 TV drop-in
         run: |
+          set -euo pipefail
           chmod +x pack_dropin.sh
           ./pack_dropin.sh linux-6.7.10/arch/x86/boot/bzImage out-mods/lib/modules fw
 
