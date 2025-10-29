@@ -1,0 +1,68 @@
+name: Build x86_64 Kernel 6.7.10 (RTX 4060 / Ada + nouveau) for LineageOS x86-64 TV
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev \
+            libelf-dev libncurses5-dev libncursesw5-dev dwarves ccache \
+            curl xz-utils rsync unzip git
+
+      - name: Fetch Linux 6.7.10
+        run: |
+          curl -L https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.7.10.tar.xz -o linux-6.7.10.tar.xz
+          tar -xf linux-6.7.10.tar.xz
+
+      - name: Configure (merge Android + NVIDIA fragment)
+        working-directory: linux-6.7.10
+        run: |
+          make x86_64_defconfig
+          ./scripts/kconfig/merge_config.sh -m .config $GITHUB_WORKSPACE/kernel.nvidia.fragment
+          yes "" | make olddefconfig
+          grep -E "CONFIG_ANDROID|CONFIG_BINDER|CONFIG_MODULES|CONFIG_DRM_NOUVEAU|CONFIG_SQUASHFS" .config || true
+
+      - name: Build kernel + modules
+        working-directory: linux-6.7.10
+        run: |
+          make -j"$(nproc)"
+          mkdir -p $GITHUB_WORKSPACE/out-mods
+          make -j"$(nproc)" modules_install INSTALL_MOD_PATH=$GITHUB_WORKSPACE/out-mods
+          ls -la arch/x86/boot/bzImage
+          find $GITHUB_WORKSPACE/out-mods/lib/modules -maxdepth 1 -mindepth 1 -type d -printf "%f\n"
+
+      - name: Fetch NVIDIA/Ada firmware (linux-firmware snapshot)
+        run: |
+          mkdir -p fw/nvidia
+          curl -L https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/snapshot/linux-firmware-20250613.tar.gz -o lf.tar.gz
+          tar -xf lf.tar.gz
+          # Copy Ada families typically used (AD103/AD104/AD106/AD107)
+          for d in ad103 ad104 ad106 ad107; do
+            if ls -d linux-firmware-*/nvidia/$d >/dev/null 2>&1; then
+              rsync -a linux-firmware-*/nvidia/$d fw/nvidia/$d
+            fi
+          done
+          # Optional nouveau helpers (mostly for older cards)
+          rsync -a linux-firmware-*/nouveau/ fw/nouveau/ || true
+
+      - name: Package Lineage-x86-64 TV drop-in
+        run: |
+          chmod +x pack_dropin.sh
+          ./pack_dropin.sh linux-6.7.10/arch/x86/boot/bzImage out-mods/lib/modules fw
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-6.7.10-ada-nouveau-lineage-x86_64-tv
+          path: |
+            dropin/
+            linux-6.7.10/arch/x86/boot/bzImage
+            out-mods/lib/modules/**
+            fw/**
