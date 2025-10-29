@@ -1,0 +1,40 @@
+# --- Android IPC via binderfs ---
+CONFIG_ANDROID_BINDER_IPC=y
+CONFIG_ANDROID_BINDERFS=y
+
+# --- Loadable modules ---
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_MODVERSIONS=y
+
+# --- Filesystems used by Android-x86 images ---
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_EXT4_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_FUSE_FS=y
+
+# --- DRM core + helpers ---
+CONFIG_DRM=y
+CONFIG_DRM_KMS_HELPER=y
+CONFIG_TTM=y
+
+# --- NVIDIA (nouveau) as module (Ada requires firmware) ---
+CONFIG_DRM_NOUVEAU=m
+# If your kernel exposes this default on Turing/Ampere/Ada firmware paths:
+# CONFIG_DRM_NOUVEAU_GSP_DEFAULT=y
+
+# --- Display fallbacks and EFI ---
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_FB=y
+CONFIG_FB_EFI=y
+
+# --- Input/USB/Storage/NICs common to PC/TV ---
+CONFIG_INPUT_EVDEV=y
+CONFIG_HID_GENERIC=y
+CONFIG_UHID=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_SATA_AHCI=y
+CONFIG_BLK_DEV_NVME=y
+CONFIG_E1000E=y
+CONFIG_R8169=y
